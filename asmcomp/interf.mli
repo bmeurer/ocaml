@@ -13,4 +13,6 @@
 (* Construction of the interference graph.
    Annotate pseudoregs with interference lists and preference lists. *)
 
+val add_edge: Reg.t -> Reg.t -> unit
+val has_edge: Reg.t -> Reg.t -> bool
 val build_graph: Mach.fundecl -> unit

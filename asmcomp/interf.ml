@@ -14,51 +14,64 @@
    Annotate pseudoregs with interference lists and preference lists. *)
 
 module IntPairSet =
-  Set.Make(struct type t = int * int let compare = compare end)
+  Set.Make(struct
+             type t = int * int
+             let compare (i, j) (i', j') =
+               let n = i - i' in if n <> 0 then n else j - j'
+           end)
 
 open Reg
 open Mach
 
-let build_graph fundecl =
+(* The interference graph is represented in two ways:
+   - by adjacency lists for each register
+   - by a sparse bit matrix (a set of pairs of register stamps) *)
 
-  (* The interference graph is represented in two ways:
-     - by adjacency lists for each register
-     - by a sparse bit matrix (a set of pairs of register stamps) *)
+let mat = ref IntPairSet.empty
 
-  let mat = ref IntPairSet.empty in
+(* Record an interference between two registers. *)
 
-  (* Record an interference between two registers *)
-  let add_interf ri rj =
-    let update rs rt =
-      if rs.loc = Unknown then begin
-        rs.interf <- rt :: rs.interf;
-        if not rt.spill
-        && Proc.register_class rs = Proc.register_class rt
-        then rs.degree <- rs.degree + 1
-      end in
-    let i = ri.stamp and j = rj.stamp in
-    if i <> j then begin
-      let p = if i < j then (i, j) else (j, i) in
-      if not(IntPairSet.mem p !mat) then begin
-        mat := IntPairSet.add p !mat;
-        update ri rj;
-        update rj ri
-      end
+let add_edge ri rj =
+  let update rs rt =
+    if rs.loc = Unknown then begin
+      rs.interf <- rt :: rs.interf;
+      if not rt.spill
+      && Proc.register_class rs = Proc.register_class rt
+      then rs.degree <- rs.degree + 1
     end in
+  let i = ri.stamp and j = rj.stamp in
+  if i <> j then begin
+    let p = if i < j then (i, j) else (j, i) in
+    if not(IntPairSet.mem p !mat) then begin
+      mat := IntPairSet.add p !mat;
+      update ri rj;
+      update rj ri
+    end
+  end
 
+(* Test for an interference between two registers. *)
+
+let has_edge ri rj =
+  let i = ri.stamp and j = rj.stamp in
+  let p = if i < j then (i, j) else (j, i) in
+  IntPairSet.mem p !mat
+
+(* Build the interference graph. *)
+
+let build_graph fundecl =
   (* Record interferences between a register array and a set of registers *)
-  let add_interf_set v s =
+  let add_edge_set v s =
     for i = 0 to Array.length v - 1 do
       let r1 = v.(i) in
-      Reg.Set.iter (add_interf r1) s
+      Reg.Set.iter (add_edge r1) s
     done in
 
   (* Record interferences between elements of an array *)
-  let add_interf_self v =
+  let add_edge_self v =
     for i = 0 to Array.length v - 2 do
       let ri = v.(i) in
       for j = i+1 to Array.length v - 1 do
-        add_interf ri v.(j)
+        add_edge ri v.(j)
       done
     done in
 
@@ -66,25 +79,25 @@ let build_graph fundecl =
      of live registers. Since the destination is equal to the source,
      do not add an interference between them if the source is still live
      afterwards. *)
-  let add_interf_move src dst s =
-    Reg.Set.iter (fun r -> if r.stamp <> src.stamp then add_interf dst r) s in
+  let add_edge_move src dst s =
+    Reg.Set.iter (fun r -> if r.stamp <> src.stamp then add_edge dst r) s in
 
   (* Compute interferences *)
 
   let rec interf i =
     let destroyed = Proc.destroyed_at_oper i.desc in
-    if Array.length destroyed > 0 then add_interf_set destroyed i.live;
+    if Array.length destroyed <> 0 then add_edge_set destroyed i.live;
     match i.desc with
       Iend -> ()
     | Ireturn -> ()
     | Iop(Imove | Ispill | Ireload) ->
-        add_interf_move i.arg.(0) i.res.(0) i.live;
+        add_edge_move i.arg.(0) i.res.(0) i.live;
         interf i.next
     | Iop(Itailcall_ind) -> ()
     | Iop(Itailcall_imm lbl) -> ()
     | Iop op ->
-        add_interf_set i.res i.live;
-        add_interf_self i.res;
+        add_edge_set i.res i.live;
+        add_edge_self i.res;
         interf i.next
     | Iifthenelse(tst, ifso, ifnot) ->
         interf ifso;
@@ -102,7 +115,7 @@ let build_graph fundecl =
     | Iexit _ ->
         ()
     | Itrywith(body, handler) ->
-        add_interf_set Proc.destroyed_at_raise handler.live;
+        add_edge_set Proc.destroyed_at_raise handler.live;
         interf body; interf handler; interf i.next
     | Iraise -> () in
 
@@ -115,8 +128,7 @@ let build_graph fundecl =
       let i = r1.stamp and j = r2.stamp in
       if i <> j
       && r1.loc = Unknown
-      && (let p = if i < j then (i, j) else (j, i) in
-          not (IntPairSet.mem p !mat))
+      && not(has_edge r1 r2)
       then r1.prefer <- (r2, weight) :: r1.prefer
     end in
 
@@ -174,4 +186,6 @@ let build_graph fundecl =
     | Iraise -> ()
   in
 
-  interf fundecl.fun_body; prefer 8 fundecl.fun_body
+  mat := IntPairSet.empty;
+  interf fundecl.fun_body;
+  prefer 8 fundecl.fun_body
