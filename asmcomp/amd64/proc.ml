@@ -279,7 +279,8 @@ let max_register_pressure = function
 
 (* Layout of the stack frame *)
 
-let num_stack_slots = [| 0; 0 |]
+let num_stack_slots = ref 0
+let stack_slot_span = [| 1; 1 |]
 let contains_calls = ref false
 
 (* Calling the assembler *)

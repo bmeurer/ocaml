@@ -32,12 +32,12 @@ let stack_offset = ref 0
 (* Layout of the stack frame *)
 
 let frame_required () =
-  !contains_calls || num_stack_slots.(0) > 0 || num_stack_slots.(1) > 0
+  !contains_calls || !num_stack_slots > 0
 
 let frame_size () =                     (* includes return address *)
   if frame_required() then begin
     let sz =
-      (!stack_offset + 8 * (num_stack_slots.(0) + num_stack_slots.(1)) + 8)
+      (!stack_offset + 8 * !num_stack_slots + 8)
     in Misc.align sz 16
   end else
     !stack_offset + 8
@@ -45,10 +45,7 @@ let frame_size () =                     (* includes return address *)
 let slot_offset loc cl =
   match loc with
     Incoming n -> frame_size() + n
-  | Local n ->
-      if cl = 0
-      then !stack_offset + n * 8
-      else !stack_offset + (num_stack_slots.(0) + n) * 8
+  | Local n -> !stack_offset + n * 8
   | Outgoing n -> n
 
 (* Symbols *)

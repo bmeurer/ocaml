@@ -62,10 +62,8 @@ let rec regalloc ppf round fd =
   end else begin
     let open Mach in
     let open Reg in
-    for cl = 0 to Proc.num_register_classes - 1 do
-      let num_slots = Proc.num_stack_slots.(cl) in
-      total_stack_size := num_slots * Arch.size_addr + !total_stack_size
-    done;
+    let num_slots = !Proc.num_stack_slots in
+    total_stack_size := num_slots * Arch.size_addr + !total_stack_size;
     List.iter
       (function
            { loc = Stack(Local _); spill_cost = sc } ->

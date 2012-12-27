@@ -31,6 +31,65 @@ open Reg
 
 let allocate_registers() =
 
+  (* Iterate over all registers preferred by the given register (transitive) *)
+  let rec iter_preferred f reg =
+    let p = reg.prefer in
+    if p <> [] then begin
+      reg.visited <- true;
+      List.iter (fun (r, w) ->
+                   if not r.visited then begin
+                     f r w;
+                     iter_preferred f r
+                   end) p;
+      reg.visited <- false
+    end in
+
+  (* Assign a stack slot to a register, the best we can. *)
+  let assign_stack_slot reg =
+    let num_slots = !Proc.num_stack_slots in
+    let score = Array.create num_slots 0 in
+    let record f = function
+        { loc = Stack(Local n) } as r ->
+          let cl = Proc.register_class r in
+          for i = 0 to Proc.stack_slot_span.(cl) - 1 do
+            let n = n + i in score.(n) <- f score.(n)
+          done
+      | _ -> () in
+    iter_preferred
+      (fun r w ->
+         record (fun s -> s + w) r;
+         if r.loc = Unknown then List.iter (record (fun s -> s - w)) r.interf)
+      reg;
+    List.iter
+      (fun neighbour ->
+         record (fun _ -> (-1000000)) neighbour;
+         iter_preferred (fun r w -> record (fun s -> s - w) r) reg)
+      reg.interf;
+    (* Pick the location with the best score *)
+    let cl = Proc.register_class reg in
+    let span = Proc.stack_slot_span.(cl) in
+    let best_score = ref (-1000000) and best_slot = ref num_slots in
+    let n = ref num_slots and k = ref 0 in
+    while !n > 0 do
+      let slot = !n - 1 in
+      if score.(slot) > !best_score then begin
+        let s = !k + 1 in
+        if s == span then begin
+          best_score := score.(slot);
+          best_slot := slot;
+          k := 0
+        end else
+          k := s
+      end else
+        k := 0;
+      n := slot
+    done;
+    reg.loc <- Stack(Local !best_slot);
+    let max_slots = !best_slot + span in
+    if max_slots > num_slots then begin
+      Proc.num_stack_slots := max_slots
+    end in
+
   (* Constrained regs with degree >= number of available registers,
      sorted by spill cost (highest first).
      The spill cost measure is [r.spill_cost / r.degree].
@@ -46,40 +105,12 @@ let allocate_registers() =
     let cl = Proc.register_class reg in
     if reg.spill then begin
       (* Preallocate the registers in the stack *)
-      let nslots = Proc.num_stack_slots.(cl) in
-      let conflict = Array.create nslots false in
-      List.iter
-        (fun r ->
-          match r.loc with
-            Stack(Local n) ->
-              if Proc.register_class r = cl then conflict.(n) <- true
-          | _ -> ())
-        reg.interf;
-      let slot = ref 0 in
-      while !slot < nslots && conflict.(!slot) do incr slot done;
-      reg.loc <- Stack(Local !slot);
-      if !slot >= nslots then Proc.num_stack_slots.(cl) <- !slot + 1
+      assign_stack_slot reg
     end else if reg.degree < Proc.num_available_registers.(cl) then
       unconstrained := reg :: !unconstrained
     else begin
       constrained := OrderedRegSet.add reg !constrained
     end in
-
-  (* Iterate over all registers preferred by the given register (transitive) *)
-  let iter_preferred f reg =
-    let rec walk r w =
-      if not r.visited then begin
-        f r w;
-        begin match r.prefer with
-            [] -> ()
-          | p  -> r.visited <- true;
-                  List.iter (fun (r1, w1) -> walk r1 (min w w1)) p;
-                  r.visited <- false
-        end
-      end in
-    reg.visited <- true;
-    List.iter (fun (r, w) -> walk r w) reg.prefer;
-    reg.visited <- false in
 
   (* Where to start the search for a suitable register.
      Used to introduce some "randomness" in the choice between registers
@@ -156,66 +187,14 @@ let allocate_registers() =
         start_register.(cl) <- (if start+1 >= num_regs then 0 else start+1)
     end else begin
       (* Sorry, we must put the pseudoreg in a stack location *)
-      let nslots = Proc.num_stack_slots.(cl) in
-      let score = Array.create nslots 0 in
-      (* Compute the scores as for registers *)
-      List.iter
-        (fun (r, w) ->
-          match r.loc with
-            Stack(Local n) -> if Proc.register_class r = cl then
-                              score.(n) <- score.(n) + w
-          | Unknown ->
-              List.iter
-                (fun neighbour ->
-                  match neighbour.loc with
-                    Stack(Local n) ->
-                      if Proc.register_class neighbour = cl
-                      then score.(n) <- score.(n) - w
-                  | _ -> ())
-                r.interf
-          | _ -> ())
-        reg.prefer;
-      List.iter
-        (fun neighbour ->
-          begin match neighbour.loc with
-              Stack(Local n) ->
-                if Proc.register_class neighbour = cl then
-                score.(n) <- (-1000000)
-          | _ -> ()
-          end;
-          List.iter
-            (fun (r, w) ->
-              match r.loc with
-                Stack(Local n) -> if Proc.register_class r = cl then
-                                  score.(n) <- score.(n) - w
-              | _ -> ())
-            neighbour.prefer)
-        reg.interf;
-      (* Pick the location with the best score *)
-      let best_score = ref (-1000000) and best_slot = ref (-1) in
-      for n = 0 to nslots - 1 do
-        if score.(n) > !best_score then begin
-          best_score := score.(n);
-          best_slot := n
-        end
-      done;
-      (* Found one? *)
-      if !best_slot >= 0 then
-        reg.loc <- Stack(Local !best_slot)
-      else begin
-        (* Allocate a new stack slot *)
-        reg.loc <- Stack(Local nslots);
-        Proc.num_stack_slots.(cl) <- nslots + 1
-      end
+      assign_stack_slot reg
     end;
     (* Cancel the preferences of this register so that they don't influence
        transitively the allocation of registers that prefer this reg. *)
     reg.prefer <- [] in
 
-  (* Reset the stack slot counts *)
-  for i = 0 to Proc.num_register_classes - 1 do
-    Proc.num_stack_slots.(i) <- 0;
-  done;
+  (* Reset the stack slot count *)
+  Proc.num_stack_slots := 0;
 
   (* First pass: preallocate spill registers and split remaining regs
      Second pass: assign locations to constrained regs
