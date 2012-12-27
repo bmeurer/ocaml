@@ -38,6 +38,13 @@ let pass_dump_linear_if ppf flag message phrase =
 let clambda_dump_if ppf ulambda =
   if !dump_clambda then Printclambda.clambda ppf ulambda; ulambda
 
+let total_spill_cost = ref 0
+let total_stack_slots = ref 0
+let total_spills = ref 0
+let total_reloads = ref 0
+let total_moves = ref 0
+let total_stack_size = ref 0
+
 let rec regalloc ppf round fd =
   if round > 50 then
     fatal_error(fd.Mach.fun_name ^
@@ -52,7 +59,35 @@ let rec regalloc ppf round fd =
   dump_if ppf dump_reload "After insertion of reloading code" newfd;
   if redo_regalloc then begin
     Reg.reinit(); Liveness.fundecl ppf newfd; regalloc ppf (round + 1) newfd
-  end else newfd
+  end else begin
+    let open Mach in
+    let open Reg in
+    for cl = 0 to Proc.num_register_classes - 1 do
+      let num_slots = Proc.num_stack_slots.(cl) in
+      total_stack_size := num_slots * Arch.size_addr + !total_stack_size
+    done;
+    List.iter
+      (function
+           { loc = Stack(Local _); spill_cost = sc } ->
+             total_spill_cost := !total_spill_cost + sc;
+             incr total_stack_slots
+         | _ -> ())
+      (Reg.all_registers());
+    instr_iter
+      (fun i ->
+         match i.desc with
+             Iop(Imove | Ispill | Ireload) ->
+               begin match i.res.(0).loc, i.arg.(0).loc with
+                   src, dst when src = dst -> ()
+                 | Stack(Local _), Reg(_) -> incr total_spills
+                 | Reg(_), Stack(Local _) -> incr total_reloads
+                 | Reg(_), Reg(_) -> incr total_moves
+                 | _ -> ()
+               end
+           | _ -> ())
+      newfd.fun_body;
+    newfd
+  end
 
 let (++) x f = f x
 
@@ -96,6 +131,12 @@ let compile_genfuns ppf f =
     (Cmmgen.generic_functions true [Compilenv.current_unit_infos ()])
 
 let compile_implementation ?toplevel prefixname ppf (size, lam) =
+  total_spill_cost := 0;
+  total_stack_slots := 0;
+  total_spills := 0;
+  total_reloads := 0;
+  total_moves := 0;
+  total_stack_size := 0;
   let asmfile =
     if !keep_asm_file
     then prefixname ^ ext_asm
@@ -129,6 +170,13 @@ let compile_implementation ?toplevel prefixname ppf (size, lam) =
     if !keep_asm_file then () else remove_file asmfile;
     raise x
   end;
+  fprintf ppf "%10d%10d%10d%10d%10d%10d@."
+    !total_spill_cost
+    !total_stack_slots
+    !total_stack_size
+    !total_spills
+    !total_reloads
+    !total_moves;
   if Proc.assemble_file asmfile (prefixname ^ ext_obj) <> 0
   then raise(Error(Assembler_error asmfile));
   if !keep_asm_file then () else remove_file asmfile
