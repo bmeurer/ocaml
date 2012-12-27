@@ -43,6 +43,7 @@ let total_stack_slots = ref 0
 let total_spills = ref 0
 let total_reloads = ref 0
 let total_moves = ref 0
+let total_stack_size = ref 0
 
 let rec regalloc ppf round fd =
   if round > 50 then
@@ -61,6 +62,10 @@ let rec regalloc ppf round fd =
   end else begin
     let open Mach in
     let open Reg in
+    for cl = 0 to Proc.num_register_classes - 1 do
+      let num_slots = Proc.num_stack_slots.(cl) in
+      total_stack_size := num_slots * Arch.size_addr + !total_stack_size
+    done;
     List.iter
       (function
            { loc = Stack(Local _); spill_cost = sc } ->
@@ -131,6 +136,7 @@ let compile_implementation ?toplevel prefixname ppf (size, lam) =
   total_spills := 0;
   total_reloads := 0;
   total_moves := 0;
+  total_stack_size := 0;
   let asmfile =
     if !keep_asm_file
     then prefixname ^ ext_asm
@@ -166,6 +172,7 @@ let compile_implementation ?toplevel prefixname ppf (size, lam) =
   end;
   fprintf ppf "*** Total spill cost:  %d@." !total_spill_cost;
   fprintf ppf "*** Total stack slots: %d@." !total_stack_slots;
+  fprintf ppf "*** Total stack size:  %d@." !total_stack_size;
   fprintf ppf "*** Total spills:      %d@." !total_spills;
   fprintf ppf "*** Total reloads:     %d@." !total_reloads;
   fprintf ppf "*** Total moves:       %d@." !total_moves;
