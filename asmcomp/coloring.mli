@@ -11,6 +11,6 @@
 (*                                                                     *)
 (***********************************************************************)
 
-(* Register allocation by "Iterated Register Coalescing" *)
+(* Register allocation by "Optimistic Register Coalescing" *)
 
 val allocate_registers: Mach.fundecl -> unit

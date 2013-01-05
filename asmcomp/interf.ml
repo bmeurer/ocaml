@@ -49,6 +49,15 @@ let add_edge ri rj =
     end
   end
 
+(* Drop an interference between two registers. *)
+
+let remove_edge ri rj =
+  let i = ri.stamp and j = rj.stamp in
+  if i <> j then begin
+    let p = if i < j then (i, j) else (j, i) in
+    mat := IntPairSet.remove p !mat
+  end
+
 (* Test for an interference between two registers. *)
 
 let has_edge ri rj =
